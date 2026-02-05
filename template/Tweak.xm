@@ -1,101 +1,76 @@
-#import <UIKit/UIKit.h>
-#import <substrate.h>
+#import "Macros.h"
 #import <mach-o/dyld.h>
 
-// --- 1. AYARLAR VE OFSETLER (Senin Verdiğin Sayılar) ---
-#define OFFSET_WorldToViewportPoint 0x1638dd4
-#define OFFSET_get_main 0x163a384
-#define OFFSET_get_transform 0x167f570
-#define OFFSET_get_position 0x1694170
-#define OFFSET_get_health 0x108 
+// --- SENİN VERDİĞİN OFFSELER ---
+#define OFF_W2VP    0x1638dd4
+#define OFF_GMAIN   0x163a384
+#define OFF_GTRANS  0x167f570
+#define OFF_GPOS    0x1694170
+#define OFF_TYPINFO 0x46ed358  // typinfoAddr offsetin
+#define OFF_HEALTH  0x108      // Can değeri
 
-// UnityFramework'ü bulma fonksiyonu
+// UnityFramework'ü bulma (getBase mantığı)
 uintptr_t get_UnityFramework() {
+    // Critical Ops'ta genelde UnityFramework image index'i değişebilir
+    // Ama genelde 0 veya executable'dır.
     return (uintptr_t)_dyld_get_image_header(0);
 }
 
-// --- 2. GEREKLİ YAPILAR ---
-struct Vector3 { float x, y, z; };
+// --- MENÜ ---
+void setupMenu() {
+    [menu setFrameworkName:"Anıl C-OPS"];
+    [switches addSwitch:NSSENCRYPT("ESP Aktif") description:NSSENCRYPT("Düşmanları Gör")];
+}
 
-// --- 3. FONKSİYON TANIMLARI ---
-void* (*Camera_get_main)();
-Vector3 (*Transform_get_position)(void* transform);
-void* (*Component_get_transform)(void* component);
-Vector3 (*Camera_WorldToViewportPoint)(void* camera, Vector3 position);
+// --- SENİN ZİNCİR MANTIĞIN (Pointer Chain) ---
+void RunLogic() {
+    if(![switches isSwitchOn:NSSENCRYPT("ESP Aktif")]) return;
 
-// --- 4. ESP MANTIĞI (RADAR) ---
-// Bu fonksiyon oyunun içinde sürekli çalışacak
-void RunESP() {
     uintptr_t base = get_UnityFramework();
     
-    // Senin verdiğin zincir (Chain)
-    // NOT: 0x46ed358 statik bir adres, base'e eklenerek bulunur.
-    uintptr_t typinfoAddr = base + 0x46ed358; 
+    // 1. Adım: TypInfo Adresini bul
+    uintptr_t typInfoAddr = base + OFF_TYPINFO;
     
-    // Zinciri takip et
-    void* gameModuleInstance = (void*)*(uintptr_t*)typinfoAddr; 
+    // 2. Adım: gameModuleInstance (Senin verdiğin mantık)
+    void* gameModuleInstance = *(void**)(typInfoAddr);
     if (!gameModuleInstance) return;
-
-    auto gameSystem = *(void **)((uint64_t)gameModuleInstance + 0x30);
+    
+    // 3. Adım: gameSystem (+0x30)
+    void* gameSystem = *(void**)((uint64_t)gameModuleInstance + 0x30);
     if (!gameSystem) return;
+    
+    // 4. Adım: characters Listesi (+0xD0)
+    void* charactersList = *(void**)((uint64_t)gameSystem + 0xD0);
+    if (!charactersList) return;
+    
+    // Unity List yapısı: Size genelde 0x18'dedir, elemanlar 0x20'den başlar (Array pointer)
+    int count = *(int*)((uint64_t)charactersList + 0x18);
+    uintptr_t items = (uintptr_t)charactersList + 0x20; // Items array
 
-    auto characterList = *(void **)((uint64_t)gameSystem + 0xD0);
-    if (!characterList) return;
-
-    int count = *(int*)((uint64_t)characterList + 0x18);
-    void* mainCam = Camera_get_main();
-    if (!mainCam) return;
-
-    uintptr_t items = (uintptr_t)characterList + 0x20; 
-
+    // Döngü
     for (int i = 0; i < count; i++) {
-        void* character = *(void**)(items + (i * 0x8)); 
+        // Her karakteri çek
+        void* character = *(void**)(items + (i * 0x8));
         if (!character) continue;
-
-        // Canı kontrol et (0x108)
-        int health = *(int *)((uint64_t)character + 0x108);
-        if (health <= 0 || health > 1000) continue; // Ölüleri veya hatalı verileri geç
-
-        // Pozisyonu al
-        void* transform = Component_get_transform(character);
-        Vector3 pos = Transform_get_position(transform);
         
-        // Ekrana yansıt (W2VP)
-        Vector3 screenPos = Camera_WorldToViewportPoint(mainCam, pos);
-
-        // --- ÇİZİM İŞLEMİ ---
-        // Eğer düşman kameranın önündeyse (z > 0)
-        if (screenPos.z > 0) {
-            // BURASI ÖNEMLİ: Ekrana basit bir kırmızı kutu (UIView) ekleme mantığı
-            // Normalde burada Menu'nun Draw fonksiyonu çağrılır.
-            // Şimdilik sadece log atıyoruz (Crash olmasın diye)
-            // NSLog(@"Düşman Görüldü: X:%f Y:%f", screenPos.x, screenPos.y);
+        // 5. Adım: Can Değeri (+0x108)
+        int health = *(int*)((uint64_t)character + OFF_HEALTH);
+        
+        // Canlıysa işlem yap (Burada çizim fonksiyonu çağrılır)
+        if (health > 0 && health <= 1000) {
+            // Düşman tespit edildi!
         }
     }
 }
 
-// --- 5. HOOK (KONTAK ANAHTARI) ---
-// Oyundaki "PlayerAdapter" sınıfının "Update" fonksiyonuna kanca atıyoruz.
-// Oyun her karede bu fonksiyonu çalıştırır, biz de araya kendi kodumuzu sokarız.
-
+// --- HOOK (Oyunun içine sızma) ---
 %hook PlayerAdapter
-
-// Update fonksiyonu her karede çalışır
 - (void)Update {
-    %orig; // Oyunun orijinal kodunu çalıştır (Bozulmasın)
-    
-    RunESP(); // BİZİM KODUMUZU ÇALIŞTIR
+    %orig;      // Oyunun orijinal kodunu bozma
+    RunLogic(); // Bizim kodumuzu çalıştır
 }
-
 %end
 
-// --- 6. BAŞLATMA (CTOR) ---
 %ctor {
-    uintptr_t base = get_UnityFramework();
-
-    // Fonksiyon adreslerini hesapla
-    Camera_get_main = (void* (*)()) (base + OFFSET_get_main);
-    Transform_get_position = (Vector3 (*)(void*)) (base + OFFSET_get_position);
-    Component_get_transform = (void* (*)(void*)) (base + OFFSET_get_transform);
-    Camera_WorldToViewportPoint = (Vector3 (*)(void*, Vector3)) (base + OFFSET_WorldToViewportPoint);
+    setupMenu();
 }
