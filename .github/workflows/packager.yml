@@ -20,10 +20,11 @@ jobs:
 
       - name: Build .dylib
         run: |
+          cd template
           make package FINALPACKAGE=1
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: CriticalOpsHack
-          path: packages/*.deb
+          path: template/packages/*.deb
